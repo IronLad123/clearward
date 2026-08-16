@@ -4,10 +4,15 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
 jobs:
-  # ── Frontend → Vercel ─────────────────────────────────────────────────────
+  # ── Frontend → GitHub Pages (no tokens needed) ────────────────────────────
   deploy-frontend:
-    name: Frontend → Vercel
+    name: Frontend → GitHub Pages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,40 +23,40 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install dependencies
+      - name: Install
         run: cd frontend && npm ci
 
       - name: Build
         run: cd frontend && npm run build
         env:
-          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+          # Points to backend on Render (free tier)
+          # Update this once you have your Render URL
+          VITE_API_URL: ${{ secrets.VITE_API_URL || '' }}
 
-      - name: Deploy to Vercel
-        uses: amondnet/vercel-action@v25
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v3
         with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          working-directory: frontend
-          vercel-args: --prod
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: frontend/dist
+          cname: ""
 
-  # ── Backend → Render ──────────────────────────────────────────────────────
+  # ── Backend → Render (trigger redeploy via API) ───────────────────────────
   deploy-backend:
     name: Backend → Render
     runs-on: ubuntu-latest
+    if: ${{ secrets.RENDER_SERVICE_ID != '' }}
     steps:
       - name: Trigger Render deploy
         run: |
-          curl -s -X POST \
+          curl -sf -X POST \
             "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
             -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
             -H "Content-Type: application/json" \
-            -d '{"clearCache": false}' \
-            | python3 -m json.tool || true
+            -d '{"clearCache": false}'
 
-  # ── Tests (run on every PR too) ───────────────────────────────────────────
+  # ── Tests ─────────────────────────────────────────────────────────────────
   test:
-    name: Backend Tests
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,7 +67,7 @@ jobs:
           cache: pip
           cache-dependency-path: backend/requirements.txt
 
-      - name: Install dependencies
+      - name: Install
         run: pip install -r backend/requirements.txt
 
       - name: Run tests
