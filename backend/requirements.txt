@@ -16,3 +16,4 @@ python-dotenv>=1.0.0,<2.0
 torch>=2.0.0
 vaderSentiment>=3.3.2
 python-docx>=1.0.0
+statsmodels>=0.14.0,<0.15
