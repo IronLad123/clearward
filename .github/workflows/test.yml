@@ -20,13 +20,14 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
+          pip install pytest pytest-subtests httpx
           pip install -r backend/requirements.txt --timeout 120
 
       - name: Run tests
         run: cd backend && python -m pytest tests/ -q --tb=short
 
   frontend-build:
-    name: Frontend Build
+    name: Frontend Build Check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -35,7 +36,10 @@ jobs:
         with:
           node-version: 22
 
-      - run: cd frontend && npm ci
-      - run: cd frontend && npm run build
+      - name: Install
+        run: cd frontend && npm ci
+
+      - name: Build
+        run: cd frontend && npm run build
         env:
           VITE_API_URL: ""

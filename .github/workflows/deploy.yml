@@ -6,11 +6,8 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
-  # ── Frontend → GitHub Pages (zero secrets needed) ─────────────────────────
   deploy-frontend:
     name: Frontend → GitHub Pages
     runs-on: ubuntu-latest
@@ -37,16 +34,20 @@ jobs:
           publish_dir: frontend/dist
           force_orphan: true
 
-  # ── Backend → Render (optional, skip if no secrets) ───────────────────────
   deploy-backend:
     name: Backend → Render
     runs-on: ubuntu-latest
-    if: ${{ secrets.RENDER_SERVICE_ID != '' }}
     steps:
       - name: Trigger Render redeploy
         run: |
-          curl -sf -X POST \
-            "https://api.render.com/v1/services/${{ secrets.RENDER_SERVICE_ID }}/deploys" \
-            -H "Authorization: Bearer ${{ secrets.RENDER_API_KEY }}" \
-            -H "Content-Type: application/json" \
-            -d '{"clearCache": false}' && echo "Render deploy triggered" || echo "Render secrets not set, skipping"
+          SERVICE="${{ secrets.RENDER_SERVICE_ID }}"
+          KEY="${{ secrets.RENDER_API_KEY }}"
+          if [ -n "$SERVICE" ] && [ -n "$KEY" ]; then
+            curl -sf -X POST \
+              "https://api.render.com/v1/services/${SERVICE}/deploys" \
+              -H "Authorization: Bearer ${KEY}" \
+              -H "Content-Type: application/json" \
+              -d '{"clearCache": false}' && echo "Render deploy triggered"
+          else
+            echo "Render secrets not configured — skipping backend deploy"
+          fi
