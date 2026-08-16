@@ -1,0 +1,24 @@
+{
+ "name": "clearward",
+ "version": "1.0.0",
+ "description": "Clearward — AI Financial Self-Defense Platform for Indian Retail Investors",
+ "main": "desktop/main.js",
+ "author": "Clearward Team",
+ "license": "MIT",
+ "scripts": {
+ "dev:backend": "python3 start.py",
+ "dev:frontend": "cd frontend && npm run dev",
+ "build:frontend": "cd frontend && npm run build",
+ "build:backend": "export KERAS_HOME=\"$(pwd)/.keras_home\" && export PYINSTALLER_CONFIG_DIR=\"$(pwd)/.pyinstaller_cache\" && pyinstaller --name clearward-backend --onedir --distpath dist-backend --noconfirm --codesign-identity - --exclude-module tensorflow --exclude-module keras --exclude-module matplotlib --exclude-module tkinter --exclude-module PIL --exclude-module Pillow backend/server.py && codesign --force --deep --sign - dist-backend/clearward-backend",
+ "build:desktop": "npm run build:frontend && npm run build:backend && electron-builder --mac --win --config electron-builder.json",
+ "build:mac": "npm run build:frontend && npm run build:backend && electron-builder --mac --config electron-builder.json",
+ "start": "electron ."
+ },
+ "devDependencies": {
+ "electron": "^28.2.0",
+ "electron-builder": "^24.9.0"
+ },
+ "dependencies": {
+ "playwright": "^1.62.0"
+ }
+}

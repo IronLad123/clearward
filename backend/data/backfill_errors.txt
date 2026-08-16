@@ -1,0 +1,7 @@
+LTIM.NS: yfinance returned empty DataFrame
+VARUN.NS: yfinance returned empty DataFrame
+ZOMATO.NS: yfinance returned empty DataFrame
+GSPL.NS: 2 rows after upsert (needed 250)
+SANGHIIND.NS: 2 rows after upsert (needed 250)
+GUJGASLTD.NS: 22 rows after upsert (needed 250)
+TATAMOTORS.NS: yfinance returned empty DataFrame

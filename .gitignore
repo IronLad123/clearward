@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+env/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Database & Vector Index (generated, not committed)
+*.db
+*.sqlite3
+backend/data/*.db
+backend/data/*.sqlite3
+backend/data/chroma/
+.chroma/
+
+# ML Models (large binaries, not committed)
+backend/data/models/
+*.pkl
+*.h5
+*.pt
+
+# Node
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# OS
+.DS_Store
+.Rhistory
+.RData
+
+# Secrets
+.env
+.env.local
+
+# Build artifacts
+dist-backend/
+build/
+*.spec.pyc
+.keras_home/
+.pyinstaller_cache/

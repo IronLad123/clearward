@@ -1,0 +1,22 @@
+{
+ "task_id": "clearward-YYYYMMDD-short-name",
+ "request": "Short user request",
+ "class": "docs | ui-small | ui-feature | api | data-ml | cross-cutting | release",
+ "risk": "low | medium | high",
+ "goal": "One sentence describing the desired outcome",
+ "assigned_agents": [
+ {
+ "role": "frontend | backend | data-ml | qa | reviewer",
+ "model": "luna | terra | sol",
+ "write_files": [],
+ "read_files": []
+ }
+ ],
+ "constraints": [
+ "Preserve disclaimer and non-advisory scope",
+ "Use existing design tokens"
+ ],
+ "acceptance_tests": [],
+ "verification_commands": [],
+ "escalation_rule": "Escalate only on a named failure, ambiguity, or high-risk review requirement."
+}

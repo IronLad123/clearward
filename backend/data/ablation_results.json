@@ -1,0 +1,65 @@
+{
+  "experiment_date": "2026-08-15",
+  "stocks_tested": [
+    "RELIANCE.NS",
+    "TCS.NS",
+    "HDFCBANK.NS",
+    "INFY.NS",
+    "ICICIBANK.NS"
+  ],
+  "configs": {
+    "A_majority_baseline": {
+      "RELIANCE.NS": 0.1658161503938738,
+      "TCS.NS": 0.19162225926634419,
+      "HDFCBANK.NS": 0.14120389739584788,
+      "INFY.NS": 0.08333333333333333,
+      "ICICIBANK.NS": 0.13527214484986824
+    },
+    "B_random": {
+      "RELIANCE.NS": 0.3583282668334492,
+      "TCS.NS": 0.29258931818145706,
+      "HDFCBANK.NS": 0.3126322625308132,
+      "INFY.NS": 0.21052631578947367,
+      "ICICIBANK.NS": 0.2839028877674725
+    },
+    "C_flat_mlp": {
+      "RELIANCE.NS": 0.33541848887117426,
+      "TCS.NS": 0.19615013006317356,
+      "HDFCBANK.NS": 0.2206919740600955,
+      "INFY.NS": 0.20634920634920637,
+      "ICICIBANK.NS": 0.33578770111897044
+    },
+    "D_rf_no_regime": {
+      "RELIANCE.NS": 0.31252859421280477,
+      "TCS.NS": 0.28215251862001084,
+      "HDFCBANK.NS": 0.2678251539480518,
+      "INFY.NS": 0.1581196581196581,
+      "ICICIBANK.NS": 0.2899667656692828
+    },
+    "E_rf_no_sentiment": {
+      "RELIANCE.NS": 0.33196294410019905,
+      "TCS.NS": 0.2664645676857953,
+      "HDFCBANK.NS": 0.2473042907204896,
+      "INFY.NS": 0.1581196581196581,
+      "ICICIBANK.NS": 0.2970609969740405
+    },
+    "F_full_rf_17features": {
+      "RELIANCE.NS": 0.2946035618978559,
+      "TCS.NS": 0.25902758772902584,
+      "HDFCBANK.NS": 0.23672932784840964,
+      "INFY.NS": 0.15384615384615385,
+      "ICICIBANK.NS": 0.3131070744796235
+    }
+  },
+  "mean_f1": {
+    "A_majority_baseline": 0.1434495570478535,
+    "B_random": 0.29159581022053316,
+    "C_flat_mlp": 0.25887950009252403,
+    "D_rf_no_regime": 0.26211853811396163,
+    "E_rf_no_sentiment": 0.26018249152003653,
+    "F_full_rf_17features": 0.2514627411602137
+  },
+  "improvement_from_regime_features": "-4.07%",
+  "improvement_from_sentiment": "-3.35%",
+  "improvement_over_mlp": "-2.86%"
+}

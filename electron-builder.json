@@ -1,0 +1,39 @@
+{
+ "appId": "com.clearward.app",
+ "productName": "Clearward",
+ "copyright": "Copyright © 2026 Clearward",
+ "directories": {
+ "output": "dist-desktop"
+ },
+ "files": [
+ "desktop/**/*",
+ "frontend/dist/**/*"
+ ],
+ "extraResources": [
+ {
+ "from": "dist-backend/clearward-backend",
+ "to": "dist-backend/clearward-backend"
+ }
+ ],
+ "mac": {
+ "category": "public.app-category.finance",
+ "target": [
+ {
+ "target": "dmg",
+ "arch": ["arm64", "x64"]
+ },
+ {
+ "target": "dir",
+ "arch": ["arm64"]
+ }
+ ]
+ },
+ "win": {
+ "target": [
+ {
+ "target": "nsis",
+ "arch": ["x64"]
+ }
+ ]
+ }
+}
