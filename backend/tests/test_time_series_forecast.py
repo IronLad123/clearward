@@ -5,6 +5,7 @@ test_time_series_forecast.py — Integration and Unit Tests for ARIMA Time Serie
 import unittest
 from fastapi.testclient import TestClient
 from app.main import app
+from app.database.db import init_db
 
 client = TestClient(app)
 
@@ -28,6 +29,7 @@ REQUIRED_STATIONARITY_KEYS = [
 class TestTimeSeriesForecastAPI(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        init_db()
         res = client.get("/api/stocks/RELIANCE.NS/forecast")
         cls._default_res = res
         cls._default_data = res.json() if res.status_code == 200 else {}
