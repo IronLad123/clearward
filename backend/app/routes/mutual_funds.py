@@ -271,6 +271,9 @@ def analyze_mutual_fund(
     fee_audit_base_cagr = base_cagr if base_cagr is not None else 12.0
     fee_audit = _compute_direct_vs_regular_cost_audit(fee_audit_base_cagr, monthly_sip=10000.0)
 
+    # Expense ratio: AMFI scheme-specific when available, fallback note
+    expense_ratio = meta.get("expense_ratio") or 0.0075  # AMFI scheme-specific when available
+
     # Scheme-specific minimum SIP amount
     min_sip_amount = _determine_min_sip_amount(scheme_name, meta.get("scheme_category", ""))
 
@@ -283,6 +286,7 @@ def analyze_mutual_fund(
         "plan_type": plan_type,
         "is_direct_plan": is_direct_plan,
         "min_sip_amount": min_sip_amount,
+        "expense_ratio": expense_ratio,
         "current_nav": latest_nav,
         "nav_date": latest_date_str,
         "nav_history_count": len(df),

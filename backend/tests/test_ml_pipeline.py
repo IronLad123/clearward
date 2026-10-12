@@ -107,3 +107,53 @@ def test_target_distribution(synthetic_data):
     counts = oof.value_counts(normalize=True)
     for cls, freq in counts.items():
         assert freq <= 0.85 # Relaxed for synthetic sine wave which might be highly imbalanced
+
+def test_tcn_channel_count():
+    """TCNDirectionClassifier in_channels must match len(FEATURE_COLUMNS) dynamically"""
+    from app.ml.models.tcn_model import TCNDirectionClassifier
+    model = TCNDirectionClassifier()
+    assert model.in_channels == len(FEATURE_COLUMNS)
+
+def test_mlp_model_name(synthetic_data):
+    """LSTMDirectionClassifier must identify as 'Feed-Forward MLP (sklearn)'"""
+    from app.ml.models.lstm_model import LSTMDirectionClassifier
+    model = LSTMDirectionClassifier()
+    pred = model.predict_latest(synthetic_data)
+    assert pred.get("model_name") == "Feed-Forward MLP (sklearn)"
+    assert pred.get("model") == "Feed-Forward MLP (sklearn)"
+
+def test_insufficient_data_guard():
+    """train_walk_forward should return error status when df < 100 rows or None"""
+    model = RandomForestDirectionClassifier()
+    res_none = model.train_walk_forward(None)
+    assert res_none["status"] == "error"
+    assert "Insufficient data" in res_none["reason"]
+    
+    res_small = model.train_walk_forward(pd.DataFrame({"close": [10.0] * 50}))
+    assert res_small["status"] == "error"
+    assert "Insufficient data" in res_small["reason"]
+
+def test_model_schema_mismatch_warning(synthetic_data):
+    """Loading artifact with mismatched features should issue a warning"""
+    import warnings
+    import joblib
+    df = synthetic_data.copy()
+    model = RandomForestDirectionClassifier()
+    model.train_walk_forward(df)
+    
+    with tempfile.TemporaryDirectory() as tmpdir:
+        save_path = os.path.join(tmpdir, "test_rf.pkl")
+        model.save(save_path)
+        
+        # Corrupt saved feature columns
+        artifact = joblib.load(save_path)
+        artifact["feature_columns"] = ["dummy_feat_1", "dummy_feat_2"]
+        joblib.dump(artifact, save_path)
+        
+        new_model = RandomForestDirectionClassifier()
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            new_model.load(save_path)
+            assert len(w) > 0
+            assert "Feature schema mismatch" in str(w[-1].message)
+

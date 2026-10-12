@@ -3,11 +3,15 @@ test_time_series_forecast.py — Integration and Unit Tests for ARIMA Time Serie
 """
 
 import unittest
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, message=".*on_event is deprecated.*")
+
 from fastapi.testclient import TestClient
 from app.main import app
 from app.database.db import init_db
 
 client = TestClient(app)
+
 
 REQUIRED_TOP_LEVEL_KEYS = [
     "ticker",

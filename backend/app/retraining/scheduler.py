@@ -7,6 +7,10 @@ from app.database.db import SessionLocal
 from app.database.models import Stock
 from app.retraining.evaluator import evaluate_and_retrain_model
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 scheduler = BackgroundScheduler()
 is_scheduler_running = False
 
@@ -15,6 +19,7 @@ def run_universe_retraining_job():
     Scheduled background task that iterates over all monitored stocks
     and runs the Champion vs Challenger retraining evaluator.
     """
+    logger.info("[%s] STARTING SCHEDULED MODEL RETRAINING JOB...", datetime.utcnow().isoformat())
     print(f"[{datetime.utcnow().isoformat()}] STARTING SCHEDULED MODEL RETRAINING JOB...")
     db: Session = SessionLocal()
     try:
@@ -22,12 +27,29 @@ def run_universe_retraining_job():
         stocks = db.query(Stock).all()
         for stock in stocks:
             res = evaluate_and_retrain_model(stock.symbol, db, on_promotion_callback=clear_symbol_model_caches)
-            status_str = "PROMOTED " if res.get("is_promoted") else "REJECTED "
-            print(f" - {stock.symbol}: {status_str} (Version: {res.get('version')}) -> {res.get('reason')}")
+            decision = res.get("decision", "PROMOTED" if res.get("is_promoted") else "REJECTED")
+            challenger_f1 = res.get("challenger_f1")
+            challenger_sharpe = res.get("challenger_sharpe")
+            champion_avg_f1 = res.get("champion_avg_f1")
+            champion_avg_sharpe = res.get("champion_avg_sharpe")
+            reason = res.get("reason", "N/A")
+            version = res.get("version", "N/A")
+
+            logger.info(
+                "Retraining decision for %s: %s (v: %s) | Challenger F1: %s, Sharpe: %s | Champion Avg F1: %s, Sharpe: %s | Reason: %s",
+                stock.symbol, decision, version, challenger_f1, challenger_sharpe, champion_avg_f1, champion_avg_sharpe, reason
+            )
+            print(
+                f" - {stock.symbol}: {decision} (Version: {version}) | "
+                f"Challenger F1={challenger_f1}, Sharpe={challenger_sharpe} | "
+                f"Champion Avg F1={champion_avg_f1}, Sharpe={champion_avg_sharpe} -> {reason}"
+            )
     except Exception as e:
+        logger.error("Error during scheduled retraining job: %s", e)
         print(f"Error during scheduled retraining job: {e}")
     finally:
         db.close()
+        logger.info("[%s] SCHEDULED MODEL RETRAINING COMPLETED.", datetime.utcnow().isoformat())
         print(f"[{datetime.utcnow().isoformat()}] SCHEDULED MODEL RETRAINING COMPLETED.")
 
 def _run_cache_purge_job():

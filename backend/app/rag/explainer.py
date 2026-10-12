@@ -93,7 +93,7 @@ def _build_fallback_explanation(
     if news_parts:
         news_context = "Reported coverage: " + " | ".join(news_parts) + "."
     else:
-        news_context = "No recent news snippets were retrieved for this symbol."
+        news_context = "No supporting news evidence found."
 
     risk_note = (
         "Model confidence is derived from historical patterns; past signals "
@@ -134,26 +134,28 @@ def generate_grounded_explanation(
 
     For education only. Not investment advice.
     """
-    # Build citations list
+    # Build citations list referencing actual retrieved documents
     citations = []
     snippet_texts = []
-    for i, snip in enumerate(news_snippets, 1):
-        title = snip.get("title", "News Item")
-        source = snip.get("source", "Market News")
-        pub_date = str(snip.get("published_at", ""))[:10]
-        url = snip.get("url", "#")
-        citation_str = f"[{title} | {source} | {pub_date}]"
-        citations.append({
-            "id": i,
-            "title": title,
-            "source": source,
-            "date": pub_date,
-            "url": url,
-            "citation_chip": citation_str,
-        })
-        snippet_texts.append(
-            f"Snippet [{i}]: {title}\n  Source: {source} | Date: {pub_date}\n  {snip.get('content', '')}"
-        )
+    if news_snippets:
+        for i, snip in enumerate(news_snippets, 1):
+            doc_id = snip.get("id") or snip.get("doc_id") or i
+            title = snip.get("title", "News Item")
+            source = snip.get("source", "Market News")
+            pub_date = str(snip.get("published_at", ""))[:10]
+            url = snip.get("url", "#")
+            citation_str = f"[{title} | {source} | {pub_date}]"
+            citations.append({
+                "id": doc_id,
+                "title": title,
+                "source": source,
+                "date": pub_date,
+                "url": url,
+                "citation_chip": citation_str,
+            })
+            snippet_texts.append(
+                f"Snippet [{doc_id}]: {title}\n  Source: {source} | Date: {pub_date}\n  {snip.get('content', '')}"
+            )
 
     # Attempt Gemini generation
     sections: Dict[str, str] = {}

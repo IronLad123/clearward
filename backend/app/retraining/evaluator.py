@@ -48,8 +48,8 @@ def evaluate_and_retrain_model(symbol: str, db: Session, rolling_window_n: int =
     challenger = RandomForestDirectionClassifier()
     train_metrics = challenger.train_walk_forward(df)
 
-    if train_metrics.get("status") == "error":
-        return train_metrics
+    if train_metrics.get('status') == 'error' or train_metrics.get('accuracy') is None:
+        return {'status': 'error', 'reason': 'Training failed: ' + str(train_metrics.get('reason', train_metrics.get('message', 'unknown')))}
 
     bt_res = run_backtest_simulation(df, challenger)
     challenger_acc = train_metrics["accuracy"]
@@ -143,6 +143,8 @@ def evaluate_and_retrain_model(symbol: str, db: Session, rolling_window_n: int =
         "is_promoted": is_promoted,
         "reason": promotion_reason,
         "challenger_f1": challenger_f1,
+        "challenger_sharpe": challenger_sharpe,
         "champion_avg_f1": avg_champion_f1,
+        "champion_avg_sharpe": avg_champion_sharpe,
         "artifact": filepath
     }

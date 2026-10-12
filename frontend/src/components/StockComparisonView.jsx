@@ -76,9 +76,10 @@ const enrichStockData = (rawItem) => {
     hype_score:     rawItem.hype_score != null ? Number(rawItem.hype_score) : null,
     prediction:     rawItem.prediction   || 'NEUTRAL',
     active_signal:  rawItem.active_signal || 'CONSOLIDATION',
-    accuracy:       Number(rawItem.accuracy || 0.65),
-    f1_score:       Number(rawItem.f1_score || 0.62),
-    confusion_matrix: rawItem.confusion_matrix || { tp: 14, tn: 18, fp: 4, fn: 2, total_eval_samples: 38 },
+    // Never fabricate metrics — null means "model not yet trained for this stock"
+    accuracy:       rawItem.accuracy != null ? Number(rawItem.accuracy) : null,
+    f1_score:       rawItem.f1_score  != null ? Number(rawItem.f1_score)  : null,
+    confusion_matrix: rawItem.confusion_matrix || null,
   };
 };
 
@@ -368,17 +369,19 @@ const ConfusionMatrixGrid = ({ data, onSelectSymbol }) => {
       }}
     >
       {data.map((row) => {
-        const cm = row.confusion_matrix || { tp: 14, tn: 18, fp: 4, fn: 2, total_eval_samples: 38 };
-        const tp = cm.tp || 0;
-        const tn = cm.tn || 0;
-        const fp = cm.fp || 0;
-        const fn = cm.fn || 0;
-        const total = cm.total_eval_samples || (tp + tn + fp + fn) || 1;
+        // Never show fabricated metrics — null means the model hasn't been trained yet
+        const cm = row.confusion_matrix || null;
+        const tp = cm ? (cm.tp || 0) : 0;
+        const tn = cm ? (cm.tn || 0) : 0;
+        const fp = cm ? (cm.fp || 0) : 0;
+        const fn = cm ? (cm.fn || 0) : 0;
+        const total = cm ? (cm.total_eval_samples || (tp + tn + fp + fn) || 1) : 0;
+        const hasMetrics = cm !== null && row.accuracy != null;
 
-        const precision = (tp + fp) > 0 ? ((tp / (tp + fp)) * 100).toFixed(1) : '0.0';
-        const recall = (tp + fn) > 0 ? ((tp / (tp + fn)) * 100).toFixed(1) : '0.0';
-        const accuracyPct = (row.accuracy * 100).toFixed(1);
-        const f1Pct = (row.f1_score * 100).toFixed(1);
+        const precision = hasMetrics && (tp + fp) > 0 ? ((tp / (tp + fp)) * 100).toFixed(1) : null;
+        const recall    = hasMetrics && (tp + fn) > 0 ? ((tp / (tp + fn)) * 100).toFixed(1) : null;
+        const accuracyPct = hasMetrics ? (row.accuracy * 100).toFixed(1) : null;
+        const f1Pct       = hasMetrics && row.f1_score != null ? (row.f1_score * 100).toFixed(1) : null;
 
         const symName = row.symbol.replace('.NS', '').replace('.BO', '');
 

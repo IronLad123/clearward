@@ -8,10 +8,11 @@ from typing import List, Optional
 import yfinance as yf
 import pandas as pd
 import numpy as np
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query
+import re
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Path as ApiPath
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 # Internal - database
 from app.database.db import get_db, init_db
@@ -116,6 +117,38 @@ MARKET_SUMMARY_TICKERS: List[str] = [
     "^NSEI", "^BSESN",
     "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "ICICIBANK.NS",
 ]
+SYMBOL_REGEX = re.compile(r"^[A-Z0-9.\-]{1,20}$")
+
+# ---------------------------------------------------------------------------
+# Lifespan — modern startup/shutdown handler (FastAPI ≥ 0.93)
+# ---------------------------------------------------------------------------
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    """Initialize DB, seed stocks, and start schedulers on startup."""
+    logger.info("Server startup — initialising database")
+    init_db()
+
+    _db = next(get_db())
+    logger.info("Seeding default stocks")
+    seed_default_stocks(_db)
+
+    logger.info("Seeding NSE symbol catalogue")
+    seed_all_nse_stocks_into_db(_db)
+
+    logger.info("Starting retraining scheduler (every %dh)", RETRAINING_INTERVAL_HOURS)
+    start_retraining_scheduler(interval_hours=RETRAINING_INTERVAL_HOURS)
+
+    logger.info("Starting market data sync scheduler")
+    start_market_sync_scheduler()
+
+    purged = purge_expired()
+    logger.info("Startup complete — purged %d expired cache entries.", purged)
+
+    yield  # ← application is now serving requests
+
+    logger.info("Server shutdown.")
 
 # ---------------------------------------------------------------------------
 # App factory
@@ -124,6 +157,7 @@ app = FastAPI(
     title="Clearward API",
     description="Continuous, self-retraining stock analysis engine API",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -233,32 +267,6 @@ def clear_symbol_model_caches(symbol: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
-# Startup
-# ---------------------------------------------------------------------------
-@app.on_event("startup")
-def startup_event():
-    """Init DB, seed stocks, start schedulers."""
-    logger.info("Server startup - initialising database")
-    init_db()
-
-    database_session = next(get_db())
-    logger.info("Seeding default stocks")
-    seed_default_stocks(database_session)
-
-    logger.info("Seeding NSE symbol catalogue")
-    seed_all_nse_stocks_into_db(database_session)
-
-    logger.info("Starting retraining scheduler (every %dh)", RETRAINING_INTERVAL_HOURS)
-    start_retraining_scheduler(interval_hours=RETRAINING_INTERVAL_HOURS)
-
-    logger.info("Starting market data sync scheduler")
-    start_market_sync_scheduler()
-
-    purged = purge_expired()
-    logger.info("Startup complete - purged %d expired cache entries.", purged)
-
-
-# ---------------------------------------------------------------------------
 # Meta routes
 # ---------------------------------------------------------------------------
 @app.get("/")
@@ -328,11 +336,7 @@ def search_stocks(
             .limit(20)
             .all()
         )
-    return {
-        "query": q,
-        "count": len(stocks),
-        "results": [{"symbol": s.symbol, "name": s.name, "sector": s.sector} for s in stocks],
-    }
+    return [{"symbol": s.symbol, "name": s.name, "sector": s.sector} for s in stocks]
 
 
 @app.get("/api/stocks/{symbol}/price-history")
@@ -374,8 +378,8 @@ def get_price_history(symbol: str, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 @app.post("/api/stocks/{symbol}/ingest")
 def trigger_ingest(
-    symbol: str,
-    background_tasks: BackgroundTasks,
+    symbol: str = ApiPath(..., pattern=r"^[A-Z0-9.\-]{1,20}$", description="Stock symbol in uppercase"),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
     db: Session = Depends(get_db),
 ):
     """Trigger a full data-ingestion job for a symbol in the background."""
@@ -445,7 +449,19 @@ def get_stock_signals(symbol: str, db: Session = Depends(get_db)):
 
 
 class BulkSignalsRequest(BaseModel):
-    symbols: List[str]
+    symbols: List[str] = Field(..., min_length=1, max_length=50)
+
+    @field_validator("symbols")
+    @classmethod
+    def validate_symbols(cls, v: List[str]) -> List[str]:
+        if not v:
+            raise ValueError("symbols list must not be empty")
+        for sym in v:
+            if not isinstance(sym, str) or not SYMBOL_REGEX.match(sym):
+                raise ValueError(
+                    f"Invalid symbol '{sym}'. Symbol must be a non-empty uppercase string matching pattern ^[A-Z0-9.\\-]{{1,20}}$"
+                )
+        return v
 
 
 @app.post("/api/stocks/bulk-signals")
@@ -566,14 +582,40 @@ def get_watchlist_signals(
 # ---------------------------------------------------------------------------
 # Retraining routes
 # ---------------------------------------------------------------------------
+class RetrainTriggerRequest(BaseModel):
+    symbol: Optional[str] = Field(
+        None,
+        description="Stock symbol to retrain. Must be uppercase matching ^[A-Z0-9.\\-]{1,20}$",
+    )
+
+    @field_validator("symbol")
+    @classmethod
+    def validate_symbol(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            if not isinstance(v, str) or not SYMBOL_REGEX.match(v):
+                raise ValueError(
+                    f"Invalid symbol '{v}'. Symbol must be a non-empty uppercase string matching pattern ^[A-Z0-9.\\-]{{1,20}}$"
+                )
+        return v
+
+
 @app.post("/api/retrain/trigger")
 def trigger_retraining(
-    symbol: Optional[str] = None,
+    request: Optional[RetrainTriggerRequest] = None,
+    symbol: Optional[str] = Query(None, pattern=r"^[A-Z0-9.\-]{1,20}$"),
     db: Session = Depends(get_db),
 ):
     """Trigger Champion vs Challenger retraining pipeline."""
-    if symbol:
-        retraining_results = [evaluate_and_retrain_model(symbol, db, on_promotion_callback=clear_symbol_model_caches)]
+    target_symbol = None
+    if request and request.symbol:
+        target_symbol = request.symbol
+    elif symbol:
+        target_symbol = symbol
+
+    if target_symbol:
+        retraining_results = [
+            evaluate_and_retrain_model(target_symbol, db, on_promotion_callback=clear_symbol_model_caches)
+        ]
     else:
         all_stocks = db.query(Stock).all()
         retraining_results = [
@@ -581,7 +623,7 @@ def trigger_retraining(
             for s in all_stocks
         ]
 
-    clear_symbol_model_caches(symbol)
+    clear_symbol_model_caches(target_symbol)
     return {
         "status": "completed",
         "timestamp": datetime.utcnow().isoformat(),
@@ -765,7 +807,15 @@ def compare_stocks(
             verdict_label = "UNAVAILABLE"
 
         train_metrics = getattr(rf_model, 'last_train_metrics', {}) or {}
-        cm = train_metrics.get("confusion_matrix", {"tp": 12, "tn": 18, "fp": 3, "fn": 2, "total_eval_samples": 35})
+        has_real_metrics = train_metrics.get("accuracy") is not None
+        accuracy = train_metrics.get("accuracy") if has_real_metrics else None
+        f1_score = train_metrics.get("f1_score") if has_real_metrics else None
+        cm = train_metrics.get("confusion_matrix") if has_real_metrics else None
+        metrics_note = (
+            None
+            if has_real_metrics
+            else "Train the model first via POST /api/retrain/trigger to generate real metrics"
+        )
 
         comparison_results.append({
             "symbol": symbol,
@@ -782,9 +832,10 @@ def compare_stocks(
             "active_signal": active_signals[0]["signal_type"] if active_signals else "CONSOLIDATION",
             "hype_score": hype_score,
             "verdict_label": verdict_label,
-            "accuracy": train_metrics.get("accuracy", 0.68),
-            "f1_score": train_metrics.get("f1_score", 0.65),
+            "accuracy": accuracy,
+            "f1_score": f1_score,
             "confusion_matrix": cm,
+            "note": metrics_note,
         })
 
     return {"count": len(comparison_results), "comparison": comparison_results}
@@ -898,14 +949,60 @@ def predict_stock_direction(symbol: str, db: Session = Depends(get_db)):
         logger.warning("TCN prediction failed for %s: %s", symbol, tcn_err)
         tcn_prediction = {"error": str(tcn_err), "model_name": "TCN (unavailable)"}
 
+    # Identify model details and timestamps
+    actual_model_name = rf_prediction.get("model_name") or getattr(rf_model_obj, "name", "RF-17")
+    champ_record = (
+        db.query(ModelRegistry)
+        .filter(ModelRegistry.model_name == f"RF_{symbol}", ModelRegistry.is_champion == True)
+        .order_by(ModelRegistry.created_at.desc())
+        .first()
+    )
+    model_version = champ_record.version if champ_record else getattr(rf_model_obj, "version", None)
+    prediction_timestamp = datetime.utcnow().isoformat()
+    latest_candle_date = price_dataframe["date"].iloc[-1]
+    input_data_timestamp = (
+        latest_candle_date.strftime("%Y-%m-%d")
+        if hasattr(latest_candle_date, "strftime")
+        else str(latest_candle_date)
+    )
+    prediction_horizon_days = 3
+
+    # Enrich primary_prediction
+    rf_prediction["model_name"] = actual_model_name
+    rf_prediction["model_version"] = model_version
+    rf_prediction["prediction_timestamp"] = prediction_timestamp
+    rf_prediction["input_data_timestamp"] = input_data_timestamp
+    rf_prediction["prediction_horizon_days"] = prediction_horizon_days
+
     # --- Backtest with realistic NSE costs (Almgren-Chriss 2001) ---
     backtest_summary = run_backtest_simulation(price_dataframe, rf_predictors[symbol])
+    real_backtest = None
+    if backtest_summary and backtest_summary.get("status") == "success":
+        real_backtest = {
+            "net_sharpe": backtest_summary.get("strategy_sharpe"),
+            "total_trades": backtest_summary.get("total_trades"),
+            "net_return_pct": backtest_summary.get("cost_adjusted_return_pct"),
+            "strategy_return_pct": backtest_summary.get("strategy_return_pct"),
+            "benchmark_return_pct": backtest_summary.get("benchmark_return_pct"),
+            "max_drawdown_pct": backtest_summary.get("max_drawdown_pct"),
+            "benchmark_max_drawdown_pct": backtest_summary.get("benchmark_max_drawdown_pct"),
+            "calmar_ratio": backtest_summary.get("calmar_ratio"),
+            "sortino_ratio": backtest_summary.get("sortino_ratio"),
+            "equity_curve": backtest_summary.get("equity_curve", []),
+        }
 
     return {
-        "symbol":             symbol,
-        "primary_prediction": rf_prediction,
-        "tcn_prediction":     tcn_prediction,
-        "lstm_prediction":    tcn_prediction,   # backward compat alias
+        "symbol":                  symbol,
+        "model_name":              actual_model_name,
+        "model_version":           model_version,
+        "prediction_timestamp":    prediction_timestamp,
+        "input_data_timestamp":    input_data_timestamp,
+        "prediction_horizon_days": prediction_horizon_days,
+        "primary_prediction":      rf_prediction,
+        "tcn_prediction":          tcn_prediction,
+        "lstm_prediction":         tcn_prediction,   # backward compat alias
+        "backtest":                real_backtest,
+        "note":                    None if real_backtest else "Backtest metrics require a trained model with sufficient historical data",
     }
 
 
@@ -992,7 +1089,19 @@ def get_shareholding_pattern(symbol: str):
 
 
 class BulkShareholdingRequest(BaseModel):
-    symbols: list[str]
+    symbols: list[str] = Field(..., min_length=1, max_length=10)
+
+    @field_validator("symbols")
+    @classmethod
+    def validate_symbols(cls, v: list[str]) -> list[str]:
+        if not v:
+            raise ValueError("symbols list must not be empty")
+        for sym in v:
+            if not isinstance(sym, str) or not SYMBOL_REGEX.match(sym):
+                raise ValueError(
+                    f"Invalid symbol '{sym}'. Symbol must be a non-empty uppercase string matching pattern ^[A-Z0-9.\\-]{{1,20}}$"
+                )
+        return v
 
 
 @app.post("/api/stocks/bulk-shareholding")

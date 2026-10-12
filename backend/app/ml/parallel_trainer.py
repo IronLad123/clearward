@@ -211,6 +211,7 @@ class ParallelGroupTrainer:
         futures    = {}
         fold_results: List[Dict] = [None] * n_folds   # pre-allocate in fold order
 
+        failed_folds = 0
         with ThreadPoolExecutor(max_workers=workers) as executor:
             for fold_idx, (train_idx, test_idx) in enumerate(fold_specs):
                 future = executor.submit(
@@ -222,26 +223,39 @@ class ParallelGroupTrainer:
                 futures[future] = fold_idx
 
             for future in as_completed(futures):
-                idx    = futures[future]
-                result = future.result()   # re-raises exceptions from worker
-                fold_results[idx] = result
-                logger.debug(
-                    "[ParallelGroupTrainer] fold %d done in %.1f ms "
-                    "(train=%d, test=%d)",
-                    idx, result["elapsed_ms"], result["train_size"], result["test_size"]
-                )
+                idx = futures[future]
+                try:
+                    result = future.result()   # re-raises exceptions from worker
+                    fold_results[idx] = result
+                    logger.debug(
+                        "[ParallelGroupTrainer] fold %d done in %.1f ms "
+                        "(train=%d, test=%d)",
+                        idx, result["elapsed_ms"], result["train_size"], result["test_size"]
+                    )
+                except Exception as e:
+                    logger.warning("[ParallelGroupTrainer] fold %d failed: %s", idx, e)
+                    failed_folds += 1
+
+        valid_results = [r for r in fold_results if r is not None]
+        if not valid_results:
+            return {
+                "status": "error",
+                "message": "All folds failed during parallel training",
+                "n_folds": 0,
+                "failed_folds": failed_folds,
+            }
 
         t_parallel = (time.perf_counter() - t_start) * 1000
 
         # ------------------------------------------------------------------
         # Store fold models + compute recency weights
         # ------------------------------------------------------------------
-        self.fold_results_ = fold_results
-        self.fold_models_  = [r["fold_model"] for r in fold_results]
+        self.fold_results_ = valid_results
+        self.fold_models_  = [r["fold_model"] for r in valid_results]
 
         # Recency weights: w_i = exp(decay * i / (N-1))
         # fold_idx=0 is oldest → lowest weight; fold_idx=N-1 is newest → highest
-        n = n_folds
+        n = len(valid_results)
         if n > 1:
             raw_w = np.exp(self.recency_decay * np.arange(n) / (n - 1))
         else:
@@ -251,27 +265,29 @@ class ParallelGroupTrainer:
         self.is_fitted_ = True
         self.timing_    = {
             "parallel_wall_ms": round(t_parallel, 1),
-            "n_folds":          n_folds,
+            "n_folds":          len(valid_results),
+            "failed_folds":     failed_folds,
             "n_workers":        workers,
-            "fold_times_ms":    [r["elapsed_ms"] for r in fold_results],
-            "estimated_sequential_ms": round(sum(r["elapsed_ms"] for r in fold_results), 1),
+            "fold_times_ms":    [r["elapsed_ms"] for r in valid_results],
+            "estimated_sequential_ms": round(sum(r["elapsed_ms"] for r in valid_results), 1),
             "speedup_ratio":    round(
-                sum(r["elapsed_ms"] for r in fold_results) / max(t_parallel, 1), 2
+                sum(r["elapsed_ms"] for r in valid_results) / max(t_parallel, 1), 2
             ),
         }
 
         logger.info(
             "[ParallelGroupTrainer] All folds done. Wall=%.0fms, "
-            "sequential_estimate=%.0fms, speedup=%.1fx",
+            "sequential_estimate=%.0fms, speedup=%.1fx, failed=%d",
             t_parallel,
             self.timing_["estimated_sequential_ms"],
             self.timing_["speedup_ratio"],
+            failed_folds,
         )
 
         # ------------------------------------------------------------------
         # Aggregate OOF predictions & compute metrics
         # ------------------------------------------------------------------
-        return self._aggregate_oof_metrics(fold_results, global_classes)
+        return self._aggregate_oof_metrics(valid_results, global_classes)
 
     # ------------------------------------------------------------------
     # predict_proba (recency-weighted soft vote)
@@ -369,6 +385,7 @@ class ParallelGroupTrainer:
             "train_samples":    int(max(r["train_size"] for r in fold_results)),   # final fold
             "oof_eval_samples": len(all_targets),
             "n_folds":          len(fold_results),
+            "failed_folds":     self.timing_.get("failed_folds", 0),
             "fold_weights":     [round(float(w), 4) for w in self.fold_weights_],
             "parallel_timing":  self.timing_,
             "confusion_matrix": {

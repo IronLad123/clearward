@@ -1,8 +1,19 @@
-import pandas as pd
-import numpy as np
+import logging
 from typing import Tuple
+import numpy as np
+import pandas as pd
 from app.signals.indicators import add_technical_indicators
 from app.ml.regime_detector import MarketRegimeDetector
+
+logger = logging.getLogger(__name__)
+
+__all__ = [
+    "FEATURE_COLUMNS",
+    "FEATURE_COLUMNS_V1",
+    "create_feature_matrix",
+    "create_inference_row",
+    "get_train_test_matrix",
+]
 
 # VADER sentiment — Hutto & Gilbert (2014) 'VADER: A Parsimonious Rule-based Model
 # for Sentiment Analysis of Social Media Text' — ICWSM 2014.
@@ -49,16 +60,16 @@ def _stochastic_k(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return (stoch_k / 100.0).clip(0.0, 1.0)
 
 
-def _compute_daily_sentiment(df: pd.DataFrame, symbol: str = "UNKNOWN") -> pd.Series:
+def _compute_daily_sentiment(df: pd.DataFrame, symbol: str = "UNKNOWN",
+                              cutoff_date=None) -> pd.Series:
     """
-    Compute rolling 3-day VADER sentiment score for each trading day.
+    Compute VADER sentiment per trading day from RSS headlines.
 
-    Research: Hutto & Gilbert (2014) 'VADER: A Parsimonious Rule-based Model for
-    Sentiment Analysis of Social Media Text', ICWSM 2014.
-    Corpus: financial news RSS headlines fetched by news_scraper.
+    cutoff_date: if provided (datetime-like), only articles published
+                 ON OR BEFORE this date are used. This prevents future
+                 news from leaking into historical training rows.
 
-    Returns: pd.Series aligned to df.index with compound score in [-1, 1].
-    Positive = bullish tone, Negative = bearish tone.
+    Research: Hutto & Gilbert (2014) VADER — ICWSM 2014.
     Fallback: 0.0 (neutral) if VADER unavailable or no news found.
     """
     if not _VADER_AVAILABLE or df.empty:
@@ -70,18 +81,28 @@ def _compute_daily_sentiment(df: pd.DataFrame, symbol: str = "UNKNOWN") -> pd.Se
         if not news:
             return pd.Series(0.0, index=df.index)
 
-        # Score each headline
-        scored = [
-            {
-                "score": _vader.polarity_scores(
-                    item.get("title", "") + " " + item.get("content", "")
-                )["compound"],
-                "date": item.get("published", "")[:10],  # YYYY-MM-DD
-            }
-            for item in news
-        ]
+        cutoff = pd.Timestamp(cutoff_date) if cutoff_date is not None else None
 
-        # Build a date-indexed series of mean daily sentiment
+        # Score each headline, respecting cutoff
+        scored = []
+        for item in news:
+            pub = item.get("published", "")[:10]  # YYYY-MM-DD
+            try:
+                pub_ts = pd.Timestamp(pub)
+            except Exception:
+                pub_ts = None
+            # Skip articles published after cutoff (future leakage guard)
+            if cutoff is not None and pub_ts is not None and pub_ts > cutoff:
+                continue
+            score = _vader.polarity_scores(
+                item.get("title", "") + " " + item.get("content", "")
+            )["compound"]
+            scored.append({"score": score, "date": pub})
+
+        if not scored:
+            return pd.Series(0.0, index=df.index)
+
+        # Build date-indexed series of mean daily sentiment
         news_df = pd.DataFrame(scored)
         news_df["date"] = pd.to_datetime(news_df["date"], errors="coerce")
         news_df = news_df.dropna(subset=["date"])
@@ -96,50 +117,47 @@ def _compute_daily_sentiment(df: pd.DataFrame, symbol: str = "UNKNOWN") -> pd.Se
         aligned = (
             daily_sent
             .reindex(price_dates)
-            .fillna(method="ffill", limit=3)  # forward-fill up to 3 days
-            .fillna(0.0)                       # remaining gaps = neutral
+            .ffill(limit=3)
+            .fillna(0.0)
         )
         aligned.index = df.index
         return aligned.clip(-1.0, 1.0)
 
-    except Exception:
+    except Exception as e:
+        logger.warning('Sentiment compute failed for %s: %s', symbol, e)
         return pd.Series(0.0, index=df.index)
 
 
-def _compute_historical_sentiment(df: pd.DataFrame, symbol: str) -> pd.Series:
+def _compute_historical_sentiment(df: pd.DataFrame, symbol: str,
+                                    cutoff_date=None) -> pd.Series:
     """
-    Compute VADER sentiment from historically stored news articles in the
-    ChromaDB vector store or SQLite news cache.
+    Compute VADER sentiment from historically stored news in ChromaDB.
+
+    cutoff_date: only articles published ON OR BEFORE this date are scored.
+                 This prevents future news from leaking into historical training.
 
     Research: Hutto & Gilbert (2014) VADER — ICWSM 2014.
     Tetlock (2007): news sentiment effects persist 2-4 trading days.
 
-    Strategy:
-    1. Try to query ChromaDB for articles matching the symbol
-    2. Score each stored article headline with VADER
-    3. Group by article date, compute daily mean score
-    4. Align to price df dates with 3-day forward-fill
-    5. Fall back to _compute_daily_sentiment() (live news) if no stored articles
-
+    Falls back to _compute_daily_sentiment() if no stored articles are found.
     Returns: pd.Series in [-1, 1] aligned to df.index
     """
     if not _VADER_AVAILABLE or df.empty:
         return pd.Series(0.0, index=df.index)
 
-    try:
-        from app.ingestion.vector_store import ClearwardVectorStore
-        vs = ClearwardVectorStore()
+    cutoff = pd.Timestamp(cutoff_date) if cutoff_date is not None else None
 
-        # Query ChromaDB for all articles mentioning this symbol
-        # Use a broad semantic query; results include stored articles
+    try:
+        from app.ingestion.vector_store import VectorStoreManager
+        vs = VectorStoreManager()
+
         results = vs.collection.get(
             where={"ticker": {"$eq": symbol}},
             include=["documents", "metadatas"]
         ) if vs.collection else None
 
         if not results or not results.get('documents'):
-            # Fall back to live news
-            return _compute_daily_sentiment(df, symbol)
+            return _compute_daily_sentiment(df, symbol, cutoff_date=cutoff_date)
 
         docs = results['documents']
         metas = results.get('metadatas', [{}] * len(docs))
@@ -149,63 +167,69 @@ def _compute_historical_sentiment(df: pd.DataFrame, symbol: str) -> pd.Series:
             if not doc:
                 continue
             pub_date = meta.get('published', '') or meta.get('date', '')
-            if pub_date:
-                pub_date = pub_date[:10]  # YYYY-MM-DD
+            pub_date = pub_date[:10] if pub_date else ''
+            # Skip articles after cutoff (future leakage guard)
+            if cutoff is not None and pub_date:
+                try:
+                    if pd.Timestamp(pub_date) > cutoff:
+                        continue
+                except Exception:
+                    pass
             compound = _vader.polarity_scores(doc)['compound']
             scored.append({'date': pub_date, 'score': compound})
 
         if not scored:
-            return _compute_daily_sentiment(df, symbol)
+            return _compute_daily_sentiment(df, symbol, cutoff_date=cutoff_date)
 
         news_df = pd.DataFrame(scored)
         news_df['date'] = pd.to_datetime(news_df['date'], errors='coerce')
         news_df = news_df.dropna(subset=['date'])
         daily_sent = news_df.groupby('date')['score'].mean()
 
-        if 'date' in df.columns:
-            price_dates = pd.to_datetime(df['date'])
-        else:
-            price_dates = pd.to_datetime(df.index)
+        price_dates = pd.to_datetime(df['date']) if 'date' in df.columns else pd.to_datetime(df.index)
 
         aligned = (
             daily_sent
             .reindex(price_dates)
-            .fillna(method='ffill', limit=3)
+            .ffill(limit=3)
             .fillna(0.0)
         )
         aligned.index = df.index
         return aligned.clip(-1.0, 1.0)
 
     except Exception as e:
-        # Any failure → fall back to live news
-        return _compute_daily_sentiment(df, symbol)
+        logger.warning('Historical sentiment failed for %s: %s', symbol, e)
+        return _compute_daily_sentiment(df, symbol, cutoff_date=cutoff_date)
 
 
-def create_feature_matrix(df: pd.DataFrame, forward_horizon: int = 3, threshold_pct: float = 0.8, symbol: str = "UNKNOWN") -> pd.DataFrame:
+def _compute_features_df(df: pd.DataFrame, symbol: str = "UNKNOWN",
+                          fit_end_idx: int = None,
+                          cutoff_date=None) -> pd.DataFrame:
     """
-    Transforms raw OHLCV into a 14-feature matrix + direction target class.
-    Classes: 1=UP, -1=DOWN, 0=FLAT  (forward_horizon-day lookahead).
-    """
-    if df.empty or len(df) < 50:
-        return pd.DataFrame()
+    Computes all 17 features from raw OHLCV DataFrame.
 
+    fit_end_idx: HMM regime detector fits only on returns[:fit_end_idx] —
+                 prevents look-ahead leakage into out-of-sample partitions.
+    cutoff_date: only news published on/before this date is used for sentiment —
+                 prevents future-news leakage during historical training.
+    """
     df_feats = add_technical_indicators(df).copy()
-    close    = df_feats["close"]
+    close = df_feats["close"]
 
     # --- Lagged returns ---
-    df_feats["ret_1d"]  = close.pct_change(1)
-    df_feats["ret_2d"]  = close.pct_change(2)
-    df_feats["ret_3d"]  = close.pct_change(3)
-    df_feats["ret_5d"]  = close.pct_change(5)
-    df_feats["ret_10d"] = close.pct_change(10)   # medium-term momentum (NEW)
+    df_feats["ret_1d"] = close.pct_change(1)
+    df_feats["ret_2d"] = close.pct_change(2)
+    df_feats["ret_3d"] = close.pct_change(3)
+    df_feats["ret_5d"] = close.pct_change(5)
+    df_feats["ret_10d"] = close.pct_change(10)
 
     # --- Normalised volume/volatility ratios ---
     vol_ma = df_feats["vol_sma_20"].replace(0, np.nan)
-    df_feats["vol_ratio"]  = (df_feats["volume"] / vol_ma).fillna(1.0)
-    df_feats["atr_pct"]    = (df_feats["atr_14"] / close).fillna(0.0)
-    df_feats["ema_ratio"]  = (df_feats["ema_20"] / df_feats["ema_50"].replace(0, np.nan)).fillna(1.0)
+    df_feats["vol_ratio"] = (df_feats["volume"] / vol_ma).fillna(1.0)
+    df_feats["atr_pct"] = (df_feats["atr_14"] / close).fillna(0.0)
+    df_feats["ema_ratio"] = (df_feats["ema_20"] / df_feats["ema_50"].replace(0, np.nan)).fillna(1.0)
 
-    # --- NEW: Stochastic %%K [0,1] ---
+    # --- NEW: Stochastic %K [0,1] ---
     df_feats["stoch_k"] = _stochastic_k(df_feats, period=14)
 
     # --- NEW: Price / SMA-200 regime indicator ---
@@ -216,18 +240,47 @@ def create_feature_matrix(df: pd.DataFrame, forward_horizon: int = 3, threshold_
     hl_range = (df_feats["high"] - df_feats["low"]).replace(0, np.nan)
     df_feats["intraday_range"] = ((close - df_feats["open"]) / hl_range).fillna(0.0).clip(-1.0, 1.0)
 
-    # --- NEW: Regime features ---
+    # --- NEW: Regime features (HMM fit on training slice up to fit_end_idx) ---
     try:
         detector = MarketRegimeDetector(n_states=2)
-        df_feats = detector.add_regime_feature(df_feats)
+        df_feats = detector.add_regime_feature(df_feats, fit_end_idx=fit_end_idx)
     except Exception:
         df_feats['regime_state'] = 0
         df_feats['regime_prob_bear'] = 0.0
 
-    # --- NEW: VADER Sentiment score [-1, 1] ---
-    # Research: Hutto & Gilbert (2014) ICWSM — VADER sentiment for short texts
-    # Positive compound = bullish news; Negative = bearish news; 0 = no signal
-    df_feats["sentiment_score"] = _compute_historical_sentiment(df_feats, symbol=symbol).values
+    # --- VADER Sentiment score [-1, 1] — cutoff_date prevents future-news leakage ---
+    df_feats["sentiment_score"] = _compute_historical_sentiment(
+        df_feats, symbol=symbol, cutoff_date=cutoff_date
+    ).values
+
+
+    return df_feats
+
+
+def create_feature_matrix(
+    df: pd.DataFrame,
+    forward_horizon: int = 3,
+    threshold_pct: float = 0.8,
+    symbol: str = "UNKNOWN",
+    fit_end_idx: int = None,
+    cutoff_date=None,
+) -> pd.DataFrame:
+    """
+    Transforms raw OHLCV into a 17-feature matrix + direction target class.
+    Classes: 1=UP, -1=DOWN, 0=FLAT  (forward_horizon-day lookahead).
+
+    Parameters:
+      fit_end_idx: HMM fits only on returns[:fit_end_idx] (no look-ahead).
+      cutoff_date: Only news published on/before this date used for sentiment
+                   (no future-news leakage during historical training).
+    """
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or len(df) < 50:
+        return pd.DataFrame()
+
+    df_feats = _compute_features_df(df, symbol=symbol,
+                                     fit_end_idx=fit_end_idx,
+                                     cutoff_date=cutoff_date)
+    close = df_feats["close"]
 
     # --- Forward direction target ---
     fwd_return = (close.shift(-forward_horizon) - close) / close * 100.0
@@ -243,6 +296,29 @@ def create_feature_matrix(df: pd.DataFrame, forward_horizon: int = 3, threshold_
     df_clean = df_feats.dropna(subset=FEATURE_COLUMNS + ["target_class"]).copy()
     df_clean["target_class"] = df_clean["target_class"].astype(int)
     return df_clean
+
+
+def create_inference_row(df: pd.DataFrame, symbol: str = "UNKNOWN") -> pd.DataFrame:
+    """
+    Computes all 17 features for inference without computing or requiring target labels
+    or future returns. Avoids dropping the most recent forward_horizon days.
+
+    Returns only the LAST valid feature row (most recent day) as a 1-row DataFrame.
+    Raises ValueError if fewer than 200 rows are available.
+    Returns None if any feature in the last row is NaN.
+    """
+    if df is None or len(df) < 200:
+        raise ValueError(
+            f"Insufficient data for inference: minimum 200 rows required, got {len(df) if df is not None else 0}"
+        )
+
+    df_feats = _compute_features_df(df, symbol=symbol, fit_end_idx=None)
+    last_row = df_feats[FEATURE_COLUMNS].iloc[[-1]].copy()
+
+    if last_row.isna().any().any():
+        return None
+
+    return last_row
 
 
 def get_train_test_matrix(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:

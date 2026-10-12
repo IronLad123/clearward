@@ -13,12 +13,66 @@ Calculates objective portfolio health metrics for Indian retail investors:
 
 import logging
 from typing import List, Dict, Any, Optional
+import numpy as np
+import pandas as pd
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, HTTPException
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+# -------------------------------------------------------------------------
+# PORTFOLIO RISK & ANALYTICS HELPERS
+# -------------------------------------------------------------------------
+
+def compute_portfolio_var_95(daily_returns: Any) -> float:
+    """
+    Computes 95% Historical Value-at-Risk (VaR 95%) as the 5th percentile
+    of historical daily returns. Does NOT use normal approximation (mean - 1.65*std),
+    as market returns exhibit fat tails and negative skewness.
+    Returns negative percentage (e.g. -2.15 for -2.15% daily loss at 95% confidence).
+    """
+    arr = np.asarray(daily_returns, dtype=float)
+    if len(arr) == 0:
+        return 0.0
+    var_5th = float(np.percentile(arr, 5))
+    return round(var_5th, 4)
+
+
+def compute_portfolio_sharpe(daily_returns: Any, risk_free_rate_pct: float = 6.5) -> float:
+    """
+    Computes Annualized Sharpe Ratio:
+    Sharpe = ((mean_daily_return * 252) - (risk_free_rate_pct / 100)) / (std_daily_return * sqrt(252))
+    Uses annualized returns by scaling daily excess return Sharpe by sqrt(252).
+    """
+    arr = np.asarray(daily_returns, dtype=float)
+    if len(arr) < 2:
+        return 0.0
+    std = float(np.std(arr, ddof=1))
+    if std <= 0:
+        return 0.0
+    mean_ret = float(np.mean(arr))
+    rfr_daily = (risk_free_rate_pct / 100.0) / 252.0
+    daily_sharpe = (mean_ret - rfr_daily) / std
+    annualized_sharpe = daily_sharpe * np.sqrt(252)
+    return round(float(annualized_sharpe), 2)
+
+
+def compute_portfolio_max_drawdown(cum_returns: Any) -> float:
+    """
+    Computes Maximum Drawdown from cumulative returns series (base 1.0 or prices).
+    Max drawdown is strictly non-positive (<= 0.0).
+    """
+    arr = np.asarray(cum_returns, dtype=float)
+    if len(arr) < 2:
+        return 0.0
+    peaks = np.maximum.accumulate(arr)
+    drawdowns = (arr - peaks) / np.where(peaks > 0, peaks, 1.0)
+    max_dd = float(np.min(drawdowns)) * 100.0
+    return round(min(max_dd, 0.0), 2)
+
 
 
 # -------------------------------------------------------------------------

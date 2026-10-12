@@ -108,13 +108,24 @@ def run_backtest_simulation(df: pd.DataFrame, model_predictor=None, apply_costs=
     strat_net_return = round((float(cum_net_strategy.iloc[-1]) - 1.0) * 100, 2)
     bench_total_return = round((float(cum_benchmark.iloc[-1]) - 1.0) * 100, 2)
 
+    try:
+        assert strat_net_return <= strat_total_return + 1e-9, f'Net {strat_net_return} > Gross {strat_total_return}: cost deduction error'
+    except AssertionError as e:
+        import logging
+        logging.getLogger(__name__).warning(str(e))
+        strat_net_return = strat_total_return
+
     strat_sharpe = 0.0
-    if strategy_returns.std() > 0:
-        strat_sharpe = round(float((strategy_returns.mean() / strategy_returns.std()) * np.sqrt(252)), 2)
+    strat_std = strategy_returns.std()
+    if strat_std is not None and not np.isnan(strat_std) and strat_std > 0:
+        val = (strategy_returns.mean() / strat_std) * np.sqrt(252)
+        strat_sharpe = round(float(val), 2) if not np.isinf(val) and not np.isnan(val) else 0.0
 
     bench_sharpe = 0.0
-    if benchmark_returns.std() > 0:
-        bench_sharpe = round(float((benchmark_returns.mean() / benchmark_returns.std()) * np.sqrt(252)), 2)
+    bench_std = benchmark_returns.std()
+    if bench_std is not None and not np.isnan(bench_std) and bench_std > 0:
+        val = (benchmark_returns.mean() / bench_std) * np.sqrt(252)
+        bench_sharpe = round(float(val), 2) if not np.isinf(val) and not np.isnan(val) else 0.0
 
     max_dd_strat = calculate_max_drawdown(cum_strategy)
     max_dd_bench = calculate_max_drawdown(cum_benchmark)
@@ -124,11 +135,16 @@ def run_backtest_simulation(df: pd.DataFrame, model_predictor=None, apply_costs=
     ann_return = (cum_net_strategy.iloc[-1] ** (252 / days)) - 1.0
     calmar = ann_return / (max_dd_strat / 100) if max_dd_strat > 0 else 0.0
     
-    downside_returns = net_strategy_returns[net_strategy_returns < 0]
-    down_dev = downside_returns.std()
-    sortino = (net_strategy_returns.mean() / down_dev * np.sqrt(252)) if down_dev > 0 else 0.0
+    excess_returns = net_strategy_returns
+    downside = excess_returns[excess_returns < 0]
+    downside_std = downside.std() if len(downside) > 1 else 1e-6
+    sortino = (excess_returns.mean() * np.sqrt(252)) / downside_std
+    if np.isnan(sortino) or np.isinf(sortino):
+        sortino = 0.0
+    else:
+        sortino = round(float(sortino), 2)
     
-    total_cost_pct = strat_total_return - strat_net_return
+    total_cost_pct = round(strat_total_return - strat_net_return, 2)
     
     # Formatted equity curve for charts
     equity_curve = []

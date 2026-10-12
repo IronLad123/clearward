@@ -40,7 +40,7 @@ class TCNDirectionClassifier(nn.Module):
     Research basis: Bai, Kolter & Koltun (2018) 'An Empirical Evaluation of Generic 
     Convolutional and Recurrent Networks for Sequence Modeling' (arXiv:1803.01271).
     """
-    def __init__(self, in_channels=16, n_classes=3, num_channels=[32,32,32], kernel_size=3, dropout=0.2):
+    def __init__(self, in_channels: int = len(FEATURE_COLUMNS), n_classes=3, num_channels=[32,32,32], kernel_size=3, dropout=0.2):
         super(TCNDirectionClassifier, self).__init__()
         self.in_channels = in_channels
         self.n_classes = n_classes

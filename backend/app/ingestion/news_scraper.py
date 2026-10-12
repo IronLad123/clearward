@@ -34,7 +34,7 @@ def _make_visitable_url(rss_url: str) -> str:
     return visitable
 
 
-def fetch_ticker_news_rss(symbol: str, company_name: str = "") -> List[Dict]:
+def fetch_ticker_news_rss(symbol: str, company_name: str = "", max_articles: int = 12) -> List[Dict]:
     """
     Fetch news for a stock symbol via Google News RSS.
     Converts Google News RSS redirect URLs to directly visitable web URLs.
@@ -47,7 +47,7 @@ def fetch_ticker_news_rss(symbol: str, company_name: str = "") -> List[Dict]:
     feed = feedparser.parse(rss_url)
     articles = []
 
-    for entry in feed.entries[:12]:
+    for entry in feed.entries[:max_articles]:
         pub_date = None
         if hasattr(entry, "published_parsed") and entry.published_parsed:
             pub_date = datetime(*entry.published_parsed[:6])

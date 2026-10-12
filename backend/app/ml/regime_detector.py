@@ -123,20 +123,23 @@ class MarketRegimeDetector:
         probas = self.predict_proba(returns)
         return np.argmax(probas, axis=1)
 
-    def add_regime_feature(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_regime_feature(self, df: pd.DataFrame, fit_end_idx: int = None) -> pd.DataFrame:
         df = df.copy()
         if len(df) < 50:
             df['regime_state'] = 0
             df['regime_prob_bear'] = 0.0
             return df
-            
+
         returns = df['close'].pct_change().fillna(0).values
         if not self.is_fitted:
-            self.fit(returns)
-            
+            fit_returns = returns[:fit_end_idx] if fit_end_idx is not None else returns
+            if len(fit_returns) < 50:
+                fit_returns = returns
+            self.fit(fit_returns)
+
         states = self.predict(returns)
         probas = self.predict_proba(returns)
-        
+
         df['regime_state'] = states
         df['regime_prob_bear'] = probas[:, 1]
         return df

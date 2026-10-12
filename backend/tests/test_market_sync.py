@@ -1,11 +1,27 @@
 """
 test_market_sync.py — Unit and Integration tests for Market Data Synchronization Engine
 """
+import socket
+import pytest
 from datetime import datetime, timezone, timedelta
 from fastapi.testclient import TestClient
 from app.main import app
 from app.sync.market_sync import is_market_open, get_sync_interval_minutes, get_sync_interval_seconds, get_sync_status
+
 client = TestClient(app)
+
+def _check_network() -> bool:
+    try:
+        socket.create_connection(("finance.yahoo.com", 443), timeout=2.0)
+        return True
+    except OSError:
+        return False
+
+network_required = pytest.mark.skipif(
+    not _check_network(),
+    reason='Network not available'
+)
+
 
 def test_market_open_detection_trading_hours():
     ist_tz = timezone(timedelta(hours=5, minutes=30))
@@ -43,6 +59,7 @@ def test_sync_status_endpoint():
     assert data['sync_interval_minutes'] in [5, 60]
     assert data['sync_interval_seconds'] in [300, 3600]
 
+@network_required
 def test_manual_sync_trigger_endpoint():
     res = client.post('/api/sync/trigger')
     assert res.status_code == 200

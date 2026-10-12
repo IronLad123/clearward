@@ -112,3 +112,4 @@ class VectorStoreManager:
 
 # Global vector store instance
 vector_store = VectorStoreManager()
+ClearwardVectorStore = VectorStoreManager

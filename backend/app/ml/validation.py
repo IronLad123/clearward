@@ -24,11 +24,11 @@ class WalkForwardSplitter:
             if len(train_idx) > 0 and len(test_idx) > 0:
                 if max(train_idx) + self.embargo_horizon >= min(test_idx):
                     raise ValueError(
-                        "Walk-Forward Leakage: Max Train Index + Embargo >= Min Test Index"
+                        "Walk-Forward Leakage Violation Detected: Max Train Index + Embargo >= Min Test Index"
                     )
                 if max_train_ts >= min_test_ts:
                     raise ValueError(
-                        f"Walk-Forward Leakage: Max Train Timestamp ({max_train_ts}) >= Min Test Timestamp ({min_test_ts})"
+                        f"Walk-Forward Leakage Violation Detected: Max Train Timestamp ({max_train_ts}) >= Min Test Timestamp ({min_test_ts})"
                     )
 
     def split(self, df: pd.DataFrame) -> Generator[Tuple[np.ndarray, np.ndarray], None, None]:

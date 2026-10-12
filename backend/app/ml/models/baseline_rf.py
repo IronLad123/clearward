@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict
 from sklearn.ensemble import RandomForestClassifier
-from app.ml.feature_engineering import FEATURE_COLUMNS, create_feature_matrix
+from app.ml.feature_engineering import FEATURE_COLUMNS, create_feature_matrix, create_inference_row
 from app.ml.validation import WalkForwardSplitter
 from app.ml.parallel_trainer import ParallelGroupTrainer
 
@@ -56,11 +56,25 @@ class RandomForestDirectionClassifier:
           5. Final production model trains on ALL data for live predictions.
           6. predict_latest() uses recency-weighted soft vote across fold models.
         """
+        if df is None or len(df) < 100:
+            return {'status': 'error', 'reason': f'Insufficient data: {len(df) if df is not None else 0} rows'}
+
         t_total_start = time.perf_counter()
 
-        matrix = create_feature_matrix(df)
+        # Determine cutoff_date from the DataFrame's last available date so that
+        # live RSS news published after the training data end date cannot leak
+        # into the sentiment feature for historical rows.
+        try:
+            if 'date' in df.columns:
+                cutoff_date = pd.to_datetime(df['date']).max()
+            else:
+                cutoff_date = pd.to_datetime(df.index).max()
+        except Exception:
+            cutoff_date = None
+
+        matrix = create_feature_matrix(df, cutoff_date=cutoff_date)
         if matrix.empty or len(matrix) < 80:
-            return {"status": "error", "message": "Insufficient data for training"}
+            return {"status": "error", "reason": "Insufficient data for training", "message": "Insufficient data for training"}
 
         X = matrix[FEATURE_COLUMNS]
         y = matrix["target_class"]
@@ -143,11 +157,18 @@ class RandomForestDirectionClassifier:
         if not self.is_trained or self.model is None:
             return neutral
 
-        matrix = create_feature_matrix(df)
-        if matrix.empty:
+        try:
+            latest_x = create_inference_row(df)
+        except ValueError:
             return neutral
 
-        latest_x = matrix[FEATURE_COLUMNS].iloc[[-1]].fillna(0)
+        if latest_x is None or (hasattr(latest_x, "empty") and latest_x.empty):
+            return neutral
+
+        if isinstance(latest_x, pd.Series):
+            latest_x = latest_x.to_frame().T
+
+        latest_x = latest_x[FEATURE_COLUMNS].fillna(0)
         x_values = latest_x.values.astype(np.float32)
 
         # -- Recency-weighted soft vote (if parallel trainer available) --
@@ -292,14 +313,38 @@ class RandomForestDirectionClassifier:
             return None
         payload = joblib.load(files[-1])   # latest by filename sort (date suffix)
         inst = cls()
-        inst.model = payload['model']
-        inst._parallel_trainer = payload.get('parallel_trainer')
+        if isinstance(payload, dict):
+            inst.model = payload['model']
+            inst._parallel_trainer = payload.get('parallel_trainer')
+            saved_cols = payload.get('feature_columns', [])
+            if saved_cols and saved_cols != list(FEATURE_COLUMNS):
+                import warnings
+                warnings.warn(f'Feature schema mismatch: model trained on {saved_cols}')
+        else:
+            inst.model = payload
         inst.is_trained = True
         return inst
 
     def save(self, filepath: str):
-        joblib.dump(self.model, filepath)
+        from datetime import datetime
+        artifact = {
+            'model': self.model,
+            'parallel_trainer': self._parallel_trainer,
+            'feature_columns': FEATURE_COLUMNS,
+            'model_version': '1.0',
+            'trained_at': datetime.utcnow().isoformat(),
+        }
+        joblib.dump(artifact, filepath)
 
     def load(self, filepath: str):
-        self.model = joblib.load(filepath)
+        artifact = joblib.load(filepath)
+        if isinstance(artifact, dict):
+            self.model = artifact['model']
+            self._parallel_trainer = artifact.get('parallel_trainer')
+            saved_cols = artifact.get('feature_columns', [])
+            if saved_cols and saved_cols != list(FEATURE_COLUMNS):
+                import warnings
+                warnings.warn(f'Feature schema mismatch: model trained on {saved_cols}')
+        else:
+            self.model = artifact  # backward compat
         self.is_trained = True
